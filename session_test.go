@@ -35,7 +35,7 @@ func mustCreateSessionRunner(t *testing.T, rc *redis.Client) *sessionRunner {
 	sr := &sessionRunner{}
 	rs := store.NewRedisStore[session.Session[fakeSessionData]](rc, "session")
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
-	opts := &session.Options{} // use default options
+	opts := &session.Options{NoTLSTestMode: true}
 	sr.sm = session.NewSessionManager[fakeSessionData](rs, k, opts)
 	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	var err error
