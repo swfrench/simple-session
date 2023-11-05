@@ -70,6 +70,8 @@ type Options struct {
 	IDLen int
 	// NoTLSTestMode sets the Secure attribute of the session cookie to false.
 	NoTLSTestMode bool
+	// Path attribute on the session cookie.
+	Path string
 }
 
 // SessionManager manages user sessions (i.e., Session instances).
@@ -190,6 +192,7 @@ func (sm *SessionManager[D]) setSIDCookie(w http.ResponseWriter, sid string) {
 		Secure:   !sm.opts.NoTLSTestMode,
 		HttpOnly: true, // Should not be visible from JS.
 		SameSite: http.SameSiteStrictMode,
+		Path:     sm.opts.Path,
 	})
 }
 

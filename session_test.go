@@ -31,11 +31,14 @@ type sessionRunner struct {
 	handler    http.HandlerFunc
 }
 
-func mustCreateSessionRunner(t *testing.T, rc *redis.Client) *sessionRunner {
+func sessionOptions() *session.Options {
+	return &session.Options{NoTLSTestMode: true}
+}
+
+func mustCreateSessionRunner(t *testing.T, rc *redis.Client, opts *session.Options) *sessionRunner {
 	sr := &sessionRunner{}
 	rs := store.NewRedisStore[session.Session[fakeSessionData]](rc, "session")
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
-	opts := &session.Options{NoTLSTestMode: true}
 	sr.sm = session.NewSessionManager[fakeSessionData](rs, k, opts)
 	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	var err error
@@ -89,7 +92,9 @@ func TestCreatesPreSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	opts := sessionOptions()
+	opts.Path = "/"
+	sr := mustCreateSessionRunner(t, rb.Client(), opts)
 	defer sr.close()
 
 	resp := sr.run(t, nil)
@@ -112,7 +117,7 @@ func TestCreatesPreSession(t *testing.T) {
 	// Verify that the Set-Cookie response header has the appropriate attributes
 	// set. Note: Jar does not preserve fields other than Name and Value.
 	sch := resp.Header.Get("Set-Cookie")
-	for _, attr := range []string{"HttpOnly", "SameSite=Strict"} {
+	for _, attr := range []string{"HttpOnly", "SameSite=Strict", "Path=/"} {
 		if !strings.Contains(sch, attr) {
 			t.Errorf("Expected Set-Cookie response header to include the %s attribute, got: %q", attr, sch)
 		}
@@ -123,7 +128,7 @@ func TestCreatesPreSessionOnce(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -151,7 +156,7 @@ func TestReplacePreSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -211,7 +216,7 @@ func TestClearSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -241,7 +246,7 @@ func TestExpiredSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	now := time.Now()
@@ -275,7 +280,7 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	now := time.Now()
@@ -345,7 +350,7 @@ func TestGetSessionWithEmptyContext(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	if got, want := sr.sm.GetSession(context.Background()), (*session.Session[fakeSessionData])(nil); got != want {
@@ -357,7 +362,7 @@ func TestUnkownSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
-	sr := mustCreateSessionRunner(t, rb.Client())
+	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
