@@ -59,19 +59,35 @@ type Session[D any] struct {
 
 // Options represents tunable knobs that control the behavior of SessionManager.
 type Options struct {
-	// Session TTL. Note that there is no facility for session extension at this
-	// time.
+	// TTL is the duration that any given session is valid. Note that there is
+	// no facility for session extension at this time.
 	// Default if unspecified: 30m
 	TTL time.Duration
-	// Length of random identifiers (i.e., SIDs and CSRF tokens) in bytes. Note
-	// that the resulting tokens will be extended by 32 bytes via their HMAC and
-	// base64url encoded.
+	// IDLen is the length of random portion of user-facing identifiers (i.e.,
+	// SIDs and CSRF tokens). Note that the full identifier will be extended
+	// with its HMAC (32 bytes) and base64url enconded.
 	// Default if unspecified: 16 bytes
 	IDLen int
-	// NoTLSTestMode sets the Secure attribute of the session cookie to false.
-	NoTLSTestMode bool
-	// Path attribute on the session cookie.
-	Path string
+	// CreateCookie is a user-supplied factory for creating session ID cookies
+	// with the provided name, value, and expiration. This is provided as a
+	// convenience for granular control of cookie attributes, such as Path.
+	// Default if unspecified: CreateStrictCookie
+	CreateCookie func(name, value string, expires time.Time) *http.Cookie
+}
+
+// CreateStrictCookie returns an http.Cookie with strict defaults, with the
+// provided name, value, and expiration. The resulting cookie is marked Secure,
+// HttpOnly, and SameSite Strict, with no Domain or Path attribute.
+// Consider using this as a base for your own implementation of CreateCookie.
+func CreateStrictCookie(name, value string, expires time.Time) *http.Cookie {
+	return &http.Cookie{
+		Name:     name,
+		Value:    value,
+		Expires:  expires,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	}
 }
 
 // SessionManager manages user sessions (i.e., Session instances).
@@ -93,6 +109,9 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 	}
 	if opts.IDLen == 0 {
 		opts.IDLen = defaultIDLen
+	}
+	if opts.CreateCookie == nil {
+		opts.CreateCookie = CreateStrictCookie
 	}
 	return &SessionManager[D]{
 		Clock: func() time.Time { return time.Now() },
@@ -185,15 +204,8 @@ func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, s
 const sessionCookieName = "session"
 
 func (sm *SessionManager[D]) setSIDCookie(w http.ResponseWriter, sid string) {
-	http.SetCookie(w, &http.Cookie{
-		Name:     sessionCookieName,
-		Value:    sid,
-		Expires:  sm.Clock().Add(sm.opts.TTL + sessionCookieGracePeriod),
-		Secure:   !sm.opts.NoTLSTestMode,
-		HttpOnly: true, // Should not be visible from JS.
-		SameSite: http.SameSiteStrictMode,
-		Path:     sm.opts.Path,
-	})
+	expires := sm.Clock().Add(sm.opts.TTL + sessionCookieGracePeriod)
+	http.SetCookie(w, sm.opts.CreateCookie(sessionCookieName, sid, expires))
 }
 
 var errNoSIDCookie = errors.New("no SID cookie")

@@ -31,8 +31,17 @@ type sessionRunner struct {
 	handler    http.HandlerFunc
 }
 
+// Secure must be false, as we do not configure TLS on our httptest.Server.
+func createNotSecureCookie(name, value string, expires time.Time) *http.Cookie {
+	base := session.CreateStrictCookie(name, value, expires)
+	base.Secure = false
+	return base
+}
+
 func sessionOptions() *session.Options {
-	return &session.Options{NoTLSTestMode: true}
+	opts := &session.Options{}
+	opts.CreateCookie = createNotSecureCookie
+	return opts
 }
 
 func mustCreateSessionRunner(t *testing.T, rc *redis.Client, opts *session.Options) *sessionRunner {
@@ -92,8 +101,14 @@ func TestCreatesPreSession(t *testing.T) {
 	rb := testutil.MustCreateRedisBundle(t)
 	defer rb.Close()
 
+	// Emulate the recommended pattern of overriding CreateCookie to inject
+	// customized attributes, to verify they're respected.
 	opts := sessionOptions()
-	opts.Path = "/"
+	opts.CreateCookie = func(name, value string, expires time.Time) *http.Cookie {
+		base := createNotSecureCookie(name, value, expires)
+		base.Path = "/"
+		return base
+	}
 	sr := mustCreateSessionRunner(t, rb.Client(), opts)
 	defer sr.close()
 
