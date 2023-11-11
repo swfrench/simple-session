@@ -155,8 +155,12 @@ func (sm *SessionManager[D]) createToken() (string, error) {
 // Create creates a new Session with the provided Data payload, storing the
 // session to the SessionStore and setting the associated SID cookie.
 func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, data *D) (*Session[D], error) {
+	// TODO: Consider whether jittered backoff would make sense here, possibly
+	// dependent on the type of SessionStore and error (e.g., Redis errors).
+	attempts := 0
 	var s *Session[D]
 	for s == nil {
+		attempts += 1
 		id, err := sm.createToken()
 		if err != nil {
 			return nil, err
@@ -175,6 +179,9 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 			if !errors.Is(err, store.ErrSessionExists) {
 				slog.Error("Failed to store new session", "error", err)
 			}
+			if attempts == 3 {
+				return nil, fmt.Errorf("failed to create session in %d attempts, latest error: %v", attempts, err)
+			}
 			s = nil
 		}
 	}
@@ -189,7 +196,7 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, sid string) (*Session[D], error) {
 	if err := sm.store.Del(ctx, sid); err != nil {
 		if errors.Is(err, store.ErrSessionNotFound) {
-			slog.Info("Failed to delete data for unknown session", "sid", sid)
+			slog.Debug("Failed to delete data for unknown session", "sid", sid)
 		} else {
 			return nil, err
 		}
@@ -241,12 +248,10 @@ func (sm *SessionManager[D]) wrapHandler(w http.ResponseWriter, r *http.Request,
 	var s *Session[D]
 	sid, err := sm.getSIDCookie(r)
 	if err != nil {
+		// Regardless of the error reason, we'll create a pre-session below.
 		if !errors.Is(err, errNoSIDCookie) {
-			// TODO: In the event that an invalid session cookie is presented,
-			// should we return BadRequest?
 			slog.Error("Failed to extract session cookie", "error", err)
 		}
-		// Regardless of the error reason, we'll create a pre-session below.
 	} else if cs, err := sm.lookup(r.Context(), sid); err != nil {
 		slog.Debug("Failed to look up session for SID", "sid", sid, "error", err)
 	} else {
