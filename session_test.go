@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	"github.com/redis/go-redis/v9"
+	goredis "github.com/redis/go-redis/v9"
 	session "github.com/swfrench/simple-session"
 	"github.com/swfrench/simple-session/internal/testutil"
-	"github.com/swfrench/simple-session/store"
+	"github.com/swfrench/simple-session/store/redis"
 )
 
 type fakeSessionData struct {
@@ -44,9 +44,9 @@ func sessionOptions() *session.Options {
 	return opts
 }
 
-func mustCreateSessionRunner(t *testing.T, rc *redis.Client, opts *session.Options) *sessionRunner {
+func mustCreateSessionRunner(t *testing.T, rc *goredis.Client, opts *session.Options) *sessionRunner {
 	sr := &sessionRunner{}
-	rs := store.NewRedisStore[session.Session[fakeSessionData]](rc, "session")
+	rs := redis.New[session.Session[fakeSessionData]](rc, "session")
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
 	sr.sm = session.NewSessionManager[fakeSessionData](rs, k, opts)
 	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
