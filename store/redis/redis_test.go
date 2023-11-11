@@ -27,10 +27,6 @@ func fakeSessionValue() *fakeSession {
 	return &fakeSession{SID: "boop"}
 }
 
-func fakeSessionValueNew() *fakeSession {
-	return &fakeSession{SID: "booop"}
-}
-
 type redisStoreBundle struct {
 	mr *miniredis.Miniredis
 	rc *goredis.Client
@@ -97,6 +93,16 @@ func TestStoreGet(t *testing.T) {
 			},
 			err: store.ErrInvalidStoredSessionData,
 		},
+		{
+			name: "redis error",
+			arrange: func(t *testing.T, rc *goredis.Client) {
+				rc.Close()
+			},
+			get: func(s *redis.Store[fakeSession]) (*fakeSession, error) {
+				return s.Get(context.Background(), fakeSessionID)
+			},
+			err: redis.ErrRedisClient,
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,6 +162,16 @@ func TestStoreSet(t *testing.T) {
 			},
 			err: store.ErrSessionExists,
 		},
+		{
+			name: "redis error",
+			arrange: func(t *testing.T, rc *goredis.Client) {
+				rc.Close()
+			},
+			set: func(s *redis.Store[fakeSession]) error {
+				return s.Set(context.Background(), fakeSessionID, fakeSessionValue(), time.Hour)
+			},
+			err: redis.ErrRedisClient,
+		},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -206,6 +222,16 @@ func TestStoreDel(t *testing.T) {
 				return s.Del(context.Background(), "beep")
 			},
 			err: store.ErrSessionNotFound,
+		},
+		{
+			name: "redis error",
+			arrange: func(t *testing.T, rc *goredis.Client) {
+				rc.Close()
+			},
+			del: func(s *redis.Store[fakeSession]) error {
+				return s.Del(context.Background(), "beep")
+			},
+			err: redis.ErrRedisClient,
 		},
 	}
 	for _, tc := range testCases {

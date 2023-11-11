@@ -4,12 +4,17 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/swfrench/simple-session/store"
 )
+
+// ErrRedisClient indicates that an unexpected error was returned by the Redis
+// client.
+var ErrRedisClient = errors.New("redis client error")
 
 // Store is a Redis-based store for session data of type S, implementing the
 // store.SessionStore interface. S must be marshallable to JSON.
@@ -32,8 +37,11 @@ func (rs *Store[S]) sessionKey(sid string) string {
 // ErrSessionNotFound if no stored session exists.
 func (rs *Store[S]) Get(ctx context.Context, sid string) (*S, error) {
 	val, err := rs.rc.Get(ctx, rs.sessionKey(sid)).Result()
-	if err == goredis.Nil {
-		return nil, store.ErrSessionNotFound
+	if err != nil {
+		if err == goredis.Nil {
+			return nil, store.ErrSessionNotFound
+		}
+		return nil, fmt.Errorf("unexpected error returned by Redis (error: %v): %w", err, ErrRedisClient)
 	}
 	s := new(S)
 	if err := json.Unmarshal([]byte(val), s); err != nil {
@@ -52,7 +60,7 @@ func (rs *Store[S]) Set(ctx context.Context, sid string, s *S, ttl time.Duration
 	}
 	set, err := rs.rc.SetNX(ctx, rs.sessionKey(sid), val, ttl).Result()
 	if err != nil {
-		return fmt.Errorf("failed to store session info to Redis: %w", err)
+		return fmt.Errorf("unexpected error returned by Redis (error: %v): %w", err, ErrRedisClient)
 	}
 	if !set {
 		return store.ErrSessionExists
@@ -65,7 +73,7 @@ func (rs *Store[S]) Set(ctx context.Context, sid string, s *S, ttl time.Duration
 func (rs *Store[S]) Del(ctx context.Context, sid string) error {
 	r := rs.rc.Del(ctx, rs.sessionKey(sid))
 	if err := r.Err(); err != nil {
-		return err
+		return fmt.Errorf("unexpected error returned by Redis (error: %v): %w", err, ErrRedisClient)
 	}
 	if r.Val() != 1 {
 		return store.ErrSessionNotFound
