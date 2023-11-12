@@ -403,7 +403,7 @@ func TestClearSession(t *testing.T) {
 	}
 }
 
-func TestClearSessionFailsOnDelError(t *testing.T) {
+func TestClearSessionSucceedsOnDelError(t *testing.T) {
 	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
@@ -420,6 +420,35 @@ func TestClearSessionFailsOnDelError(t *testing.T) {
 	// Run the next request, attempting to clear the prior session.
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s := sr.sm.GetSession(r.Context())
+		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
+			t.Errorf("Clear() returned unexpected error: %v", err)
+		}
+	}))
+
+	// Verify that the new session cookie was provided to the client.
+	sc2 := sr.getSessionCookie()
+	if sc1.Value == sc2.Value {
+		t.Errorf("Expected new session to produce a new SID - got %q again", sc1.Value)
+	}
+}
+
+func TestClearSessionFailsOnSetError(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client.
+	sc1 := sr.getSessionCookie()
+	if sc1 == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	sr.store.setErr = func() error { return errors.New("gremlins") }
+
+	// Run the next request, attempting to clear the prior session.
+	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := sr.sm.GetSession(r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err == nil {
 			t.Errorf("Clear() should have returned error - got: %v", err)
 		}
@@ -429,10 +458,6 @@ func TestClearSessionFailsOnDelError(t *testing.T) {
 	if got, want := sr.getSessionCookie().Value, sc1.Value; got != want {
 		t.Errorf("Expected no change in session cookie SID - got: %q want: %q", got, want)
 	}
-}
-
-func TestClearSessionFailsOnSetError(t *testing.T) {
-	// TODO: Implement once the new ordering
 }
 
 func TestClearSessionSucceedsOnSessionNotFound(t *testing.T) {

@@ -189,25 +189,18 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 	return s, nil
 }
 
-// Clear removes the Session associated with the provided SID from the
-// SessionStore, and creates a new pre-session (i.e., a Session with no Data
-// payload). The latter is stored to the SessionStore and its associated ID set
-// in the SID cookie, and is also returned.
+// Clear creates a new pre-session (i.e., a Session with no Data payload) and
+// attempts to delete the prior session from the SessionStore. The former is
+// stored to the SessionStore and its ID set in the SID cookie, and it is also
+// returned. Deletion of the old session is considered non-critical (i.e.,
+// unexpected errors are merely logged).
 func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, sid string) (*Session[D], error) {
-	// TODO: We should probably create the new session first, then abandon it if
-	// deletion fails (lest we end up in a bad state where the user agent has an
-	// abandoned session). Also deletion itself should probably be non-critical,
-	// so long as we issued a new session.
-	if err := sm.store.Del(ctx, sid); err != nil {
-		if errors.Is(err, store.ErrSessionNotFound) {
-			slog.Debug("Failed to delete data for unknown session", "sid", sid)
-		} else {
-			return nil, err
-		}
-	}
 	ps, err := sm.Create(ctx, w, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new pre-session: %w", err)
+	}
+	if err := sm.store.Del(ctx, sid); err != nil && !errors.Is(err, store.ErrSessionNotFound) {
+		slog.Error("Failed to delete data for session", "sid", sid)
 	}
 	return ps, nil
 }
