@@ -194,6 +194,10 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 // payload). The latter is stored to the SessionStore and its associated ID set
 // in the SID cookie, and is also returned.
 func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, sid string) (*Session[D], error) {
+	// TODO: We should probably create the new session first, then abandon it if
+	// deletion fails (lest we end up in a bad state where the user agent has an
+	// abandoned session). Also deletion itself should probably be non-critical,
+	// so long as we issued a new session.
 	if err := sm.store.Del(ctx, sid); err != nil {
 		if errors.Is(err, store.ErrSessionNotFound) {
 			slog.Debug("Failed to delete data for unknown session", "sid", sid)

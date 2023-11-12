@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -11,24 +12,61 @@ import (
 	"time"
 
 	"github.com/google/go-cmp/cmp"
-	goredis "github.com/redis/go-redis/v9"
 	session "github.com/swfrench/simple-session"
 	"github.com/swfrench/simple-session/internal/testutil"
-	"github.com/swfrench/simple-session/store/redis"
+	"github.com/swfrench/simple-session/store"
 )
 
+// fakeSessionData is the fake data payload type used in tests below.
 type fakeSessionData struct {
 	Greeting string `json:"greeting"`
 }
 
-type sessionRunner struct {
-	sm         *session.SessionManager[fakeSessionData]
-	ctxSession *session.Session[fakeSessionData]
-	srv        *httptest.Server
-	srvURL     *url.URL
-	jar        http.CookieJar
-	client     *http.Client
-	handler    http.HandlerFunc
+// stubStore is a stub implementation of the SessionStore interface.
+type stubStore[S any] struct {
+	sessions map[string]*S
+	getErr   func() error
+	setErr   func() error
+	delErr   func() error
+}
+
+func newStubStore[S any]() *stubStore[S] {
+	return &stubStore[S]{
+		sessions: make(map[string]*S),
+		getErr:   func() error { return nil },
+		setErr:   func() error { return nil },
+		delErr:   func() error { return nil },
+	}
+}
+
+func (s *stubStore[S]) Get(ctx context.Context, sid string) (*S, error) {
+	if err := s.getErr(); err != nil {
+		return nil, err
+	}
+	sess, ok := s.sessions[sid]
+	if !ok {
+		return nil, store.ErrSessionNotFound
+	}
+	return sess, nil
+}
+
+func (s *stubStore[S]) Set(ctx context.Context, sid string, sess *S, ttl time.Duration) error {
+	if err := s.setErr(); err != nil {
+		return err
+	}
+	if _, ok := s.sessions[sid]; ok {
+		return store.ErrSessionExists
+	}
+	s.sessions[sid] = sess
+	return nil
+}
+
+func (s *stubStore[S]) Del(ctx context.Context, sid string) error {
+	if err := s.delErr(); err != nil {
+		return err
+	}
+	delete(s.sessions, sid)
+	return nil
 }
 
 // Secure must be false, as we do not configure TLS on our httptest.Server.
@@ -44,11 +82,22 @@ func sessionOptions() *session.Options {
 	return opts
 }
 
-func mustCreateSessionRunner(t *testing.T, rc *goredis.Client, opts *session.Options) *sessionRunner {
-	sr := &sessionRunner{}
-	rs := redis.New[session.Session[fakeSessionData]](rc, "session")
+type sessionRunner struct {
+	store      *stubStore[session.Session[fakeSessionData]]
+	sm         *session.SessionManager[fakeSessionData]
+	ctxSession *session.Session[fakeSessionData]
+	srv        *httptest.Server
+	srvURL     *url.URL
+	jar        http.CookieJar
+	client     *http.Client
+	handler    http.HandlerFunc
+}
+
+func mustCreateSessionRunner(t *testing.T, opts *session.Options) *sessionRunner {
+	sr := new(sessionRunner)
+	sr.store = newStubStore[session.Session[fakeSessionData]]()
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
-	sr.sm = session.NewSessionManager[fakeSessionData](rs, k, opts)
+	sr.sm = session.NewSessionManager[fakeSessionData](sr.store, k, opts)
 	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	var err error
 	sr.srvURL, err = url.Parse(sr.srv.URL)
@@ -98,9 +147,6 @@ func (sr *sessionRunner) getSessionCookie() *http.Cookie {
 }
 
 func TestCreatesPreSession(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
 	// Emulate the recommended pattern of overriding CreateCookie to inject
 	// customized attributes, to verify they're respected.
 	opts := sessionOptions()
@@ -109,7 +155,7 @@ func TestCreatesPreSession(t *testing.T) {
 		base.Path = "/"
 		return base
 	}
-	sr := mustCreateSessionRunner(t, rb.Client(), opts)
+	sr := mustCreateSessionRunner(t, opts)
 	defer sr.close()
 
 	resp := sr.run(t, nil)
@@ -140,10 +186,7 @@ func TestCreatesPreSession(t *testing.T) {
 }
 
 func TestCreatesPreSessionOnce(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -167,11 +210,117 @@ func TestCreatesPreSessionOnce(t *testing.T) {
 	}
 }
 
-func TestReplacePreSession(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
+func TestCreatesNewPreSessionWhenNotFound(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
 
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client.
+	sc1 := sr.getSessionCookie()
+	if sc1 == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	sr.store.getErr = func() error { return store.ErrSessionNotFound }
+
+	// Verify that the session cookie changes on the next request (i.e., a new
+	// session is created).
+	sr.run(t, nil)
+	sc2 := sr.getSessionCookie()
+	if sc1.Value == sc2.Value {
+		t.Errorf("Unexpected value for session cookie - got %q again", sc1.Value)
+	}
+}
+
+func TestCreatesNewPreSessionWhenLookupFails(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client.
+	sc1 := sr.getSessionCookie()
+	if sc1 == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	sr.store.getErr = func() error { return errors.New("badger") }
+
+	// Verify that the session cookie changes on the next request (i.e., a new
+	// session is created).
+	sr.run(t, nil)
+	sc2 := sr.getSessionCookie()
+	if sc1.Value == sc2.Value {
+		t.Errorf("Unexpected value for session cookie - got %q again", sc1.Value)
+	}
+}
+
+func TestCreatePreSessionFailsOnPersistentSetError(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	sr.store.setErr = func() error { return errors.New("gremlins") }
+
+	// Verify that persistent Set errors result in failed session creation and a
+	// 503 response. Further, no cookie is provided to the client.
+	resp := sr.run(t, nil)
+	if got, want := resp.StatusCode, http.StatusInternalServerError; got != want {
+		t.Errorf("Session creation under persistent Set error returned incorrect status code - got: %d want: %d", got, want)
+	}
+	if got := sr.getSessionCookie(); got != nil {
+		t.Errorf("Session creation under persistent Set error produced a session cooke - got: %v want: %v", got, nil)
+	}
+}
+
+func TestCreatePreSessionSucceedsOnTransientSetError(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	setErr := errors.New("gremlins")
+	sr.store.setErr = func() error {
+		var err error
+		err, setErr = setErr, nil
+		return err
+	}
+
+	// Verify that a transient Set error results in successful session creation.
+	// Further, the session cookie is provided to the client as expected.
+	resp := sr.run(t, nil)
+	if got, want := resp.StatusCode, http.StatusTeapot; got != want {
+		t.Errorf("Session creation under transient Set error returned incorrect status code - got: %d want: %d", got, want)
+	}
+	sc := sr.getSessionCookie()
+	if sc == nil {
+		t.Error("Session cookie missing from response")
+	}
+}
+
+func TestCreatesPreSessionWhenSessionCookieIsInvalid(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	// Pre-populate the cookie jar with an invalid session cookie.
+	const invalid = "nope"
+	c := sessionOptions().CreateCookie("session", invalid, time.Now().Add(time.Hour))
+	sr.jar.SetCookies(sr.srvURL, []*http.Cookie{c})
+
+	sr.run(t, nil)
+
+	// Grab the session cookie known to the client.
+	sc := sr.getSessionCookie()
+	if sc == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	// Verify that the session cookie is not our invalid one.
+	if sc.Value == invalid {
+		t.Errorf("Unexpected value for session cookie - got %q again", invalid)
+	}
+}
+
+func TestReplacePreSession(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -228,10 +377,7 @@ func TestReplacePreSession(t *testing.T) {
 }
 
 func TestClearSession(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	sr.run(t, nil)
@@ -246,7 +392,68 @@ func TestClearSession(t *testing.T) {
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s := sr.sm.GetSession(r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
-			t.Errorf("Create() returned unexpected error: %v", err)
+			t.Errorf("Clear() returned unexpected error: %v", err)
+		}
+	}))
+
+	// Verify that the new session cookie was provided to the client.
+	sc2 := sr.getSessionCookie()
+	if sc1.Value == sc2.Value {
+		t.Errorf("Expected new session to produce a new SID - got %q again", sc1.Value)
+	}
+}
+
+func TestClearSessionFailsOnDelError(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client.
+	sc1 := sr.getSessionCookie()
+	if sc1 == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	sr.store.delErr = func() error { return errors.New("gremlins") }
+
+	// Run the next request, attempting to clear the prior session.
+	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := sr.sm.GetSession(r.Context())
+		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err == nil {
+			t.Errorf("Clear() should have returned error - got: %v", err)
+		}
+	}))
+
+	// Verify that no new session cookie was provided to the client.
+	if got, want := sr.getSessionCookie().Value, sc1.Value; got != want {
+		t.Errorf("Expected no change in session cookie SID - got: %q want: %q", got, want)
+	}
+}
+
+func TestClearSessionFailsOnSetError(t *testing.T) {
+	// TODO: Implement once the new ordering
+}
+
+func TestClearSessionSucceedsOnSessionNotFound(t *testing.T) {
+	sr := mustCreateSessionRunner(t, sessionOptions())
+	defer sr.close()
+
+	sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client.
+	sc1 := sr.getSessionCookie()
+	if sc1 == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+
+	sr.store.delErr = func() error { return store.ErrSessionNotFound }
+
+	// Run the next request, clearing the prior session.
+	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s := sr.sm.GetSession(r.Context())
+		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
+			t.Errorf("Clear() returned unexpected error: %v", err)
 		}
 	}))
 
@@ -258,10 +465,7 @@ func TestClearSession(t *testing.T) {
 }
 
 func TestExpiredSession(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	now := time.Now()
@@ -292,10 +496,7 @@ func TestExpiredSession(t *testing.T) {
 }
 
 func TestVerifySessionCSRFToken(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	now := time.Now()
@@ -311,6 +512,8 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 
 	token1 := sr.ctxSession.CSRFToken
 
+	// Advance the clock to the point where the previous session will have
+	// expired, such that a new one is created (yielding a new CSRF token).
 	sr.sm.Clock = func() time.Time { return now.Add(time.Hour) }
 
 	sr.run(t, nil)
@@ -323,7 +526,7 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 	// Verify that the new token is indeed new.
 	token2 := sr.ctxSession.CSRFToken
 	if token1 == token2 {
-		t.Errorf("Expected session expiration to produce a new CSRF token - got %q again", token1)
+		t.Fatalf("Expected session expiration to produce a new CSRF token - got %q again", token1)
 	}
 
 	testCases := []struct {
@@ -362,44 +565,10 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 }
 
 func TestGetSessionWithEmptyContext(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
+	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
 	if got, want := sr.sm.GetSession(context.Background()), (*session.Session[fakeSessionData])(nil); got != want {
 		t.Errorf("GetSession() returned unexpected value for empty context - got: %v want: %v", got, want)
-	}
-}
-
-func TestUnkownSession(t *testing.T) {
-	rb := testutil.MustCreateRedisBundle(t)
-	defer rb.Close()
-
-	sr := mustCreateSessionRunner(t, rb.Client(), sessionOptions())
-	defer sr.close()
-
-	sr.run(t, nil)
-
-	// Verify that the (pre)session was provided to the request context.
-	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
-	}
-
-	sid := sr.ctxSession.ID
-
-	// Make Redis forget about the current session.
-	rb.Flush()
-
-	sr.run(t, nil)
-
-	// Verify that the new (pre)session was provided to the request context.
-	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
-	}
-
-	if sid == sr.ctxSession.ID {
-		t.Errorf("Expected unknown session to produce a new SID - got %q again", sid)
 	}
 }
