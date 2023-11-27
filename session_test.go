@@ -213,6 +213,35 @@ func TestCustomSessionCookieName(t *testing.T) {
 	}
 }
 
+func TestOnCreateCallback(t *testing.T) {
+	createdSID := new(string)
+	opts := sessionOptions()
+	opts.OnCreate = func(w http.ResponseWriter, s any) {
+		w.Header().Add("X-The-Cow-Says", "moo")
+		*createdSID = s.(*session.Session[fakeSessionData]).ID
+	}
+	sr := mustCreateSessionRunner(t, opts)
+	defer sr.close()
+
+	resp := sr.run(t, nil)
+
+	// Verify that the session cookie was provided to the client, with a value
+	// matching that captured by the OnCreate callback.
+	sc := sr.getSessionCookie()
+	if sc == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+	if got, want := sc.Value, *createdSID; got != want {
+		t.Errorf("Expected session cookie value to match Context session SID - got: %q want: %q", got, want)
+	}
+
+	// Verify that response header modifications by the OnCreate callback were
+	// retained.
+	if got, want := resp.Header.Get("X-The-Cow-Says"), "moo"; got != want {
+		t.Errorf("Expected custom header set by OnCreate to be preserved - got: %q want: %q", got, want)
+	}
+}
+
 func TestCreatesPreSessionOnce(t *testing.T) {
 	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()

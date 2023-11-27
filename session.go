@@ -80,6 +80,11 @@ type Options struct {
 	// convenience for granular control of cookie attributes, such as Path.
 	// Default if unspecified: CreateStrictCookie
 	CreateCookie func(name, value string, expires time.Time) *http.Cookie
+	// OnCreate is a user-supplied callback invoked on session creation, with
+	// the associated ResponseWriter instance and newly created Session. May be
+	// used, e.g., to inject a CSRF Token cookie into the response.
+	// Default if unspecified: nil, in which case OnCreate is not invoked.
+	OnCreate func(w http.ResponseWriter, session any)
 }
 
 // CreateStrictCookie returns an http.Cookie with strict defaults, with the
@@ -196,6 +201,9 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 		}
 	}
 	sm.setSIDCookie(w, s.ID)
+	if sm.opts.OnCreate != nil {
+		sm.opts.OnCreate(w, s)
+	}
 	return s, nil
 }
 
