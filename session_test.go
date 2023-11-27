@@ -137,13 +137,17 @@ func (sr *sessionRunner) run(t *testing.T, h http.HandlerFunc) *http.Response {
 	return resp
 }
 
-func (sr *sessionRunner) getSessionCookie() *http.Cookie {
+func (sr *sessionRunner) getSessionCookieByName(name string) *http.Cookie {
 	for _, cookie := range sr.jar.Cookies(sr.srvURL) {
-		if cookie.Name == "session" {
+		if cookie.Name == name {
 			return cookie
 		}
 	}
 	return nil
+}
+
+func (sr *sessionRunner) getSessionCookie() *http.Cookie {
+	return sr.getSessionCookieByName("session")
 }
 
 func TestCreatesPreSession(t *testing.T) {
@@ -182,6 +186,30 @@ func TestCreatesPreSession(t *testing.T) {
 		if !strings.Contains(sch, attr) {
 			t.Errorf("Expected Set-Cookie response header to include the %s attribute, got: %q", attr, sch)
 		}
+	}
+}
+
+func TestCustomSessionCookieName(t *testing.T) {
+	opts := sessionOptions()
+	opts.SessionCookieName = "a-very-good-cookie-name"
+	sr := mustCreateSessionRunner(t, opts)
+	defer sr.close()
+
+	sr.run(t, nil)
+
+	// Verify that the (pre)session was provided to the request context.
+	if sr.ctxSession == nil {
+		t.Fatal("GetSession() returned nil Session within handler")
+	}
+
+	// Verify that the session cookie was provided to the client with the
+	// correct name and is consistent with the context session.
+	sc := sr.getSessionCookieByName("a-very-good-cookie-name")
+	if sc == nil {
+		t.Fatal("Session cookie missing from response")
+	}
+	if got, want := sc.Value, sr.ctxSession.ID; got != want {
+		t.Errorf("Expected session cookie value to match Context session SID - got: %q want: %q", got, want)
 	}
 }
 

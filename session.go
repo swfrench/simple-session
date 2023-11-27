@@ -35,6 +35,7 @@ const (
 	sessionStorageGracePeriod = 10 * time.Minute
 	sessionCookieGracePeriod  = 10 * time.Minute
 	defaultIDLen              = 16 // bytes
+	defaultSessionCookieName  = "session"
 )
 
 // contextKey is the type used to represent keys identifying values stored in
@@ -68,6 +69,12 @@ type Options struct {
 	// with its HMAC (32 bytes) and base64url enconded.
 	// Default if unspecified: 16 bytes
 	IDLen int
+	// SessionCookieName is the name of the session ID cookie set by
+	// SessionManager. For example, together with a suitable definition of
+	// CreateCookie (see below), this can be used to configure a secure cookie
+	// name prefix (e.g., "__Host-").
+	// Default if unspecified: "session"
+	SessionCookieName string
 	// CreateCookie is a user-supplied factory for creating session ID cookies
 	// with the provided name, value, and expiration. This is provided as a
 	// convenience for granular control of cookie attributes, such as Path.
@@ -109,6 +116,9 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 	}
 	if opts.IDLen == 0 {
 		opts.IDLen = defaultIDLen
+	}
+	if opts.SessionCookieName == "" {
+		opts.SessionCookieName = defaultSessionCookieName
 	}
 	if opts.CreateCookie == nil {
 		opts.CreateCookie = CreateStrictCookie
@@ -205,18 +215,16 @@ func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, s
 	return ps, nil
 }
 
-const sessionCookieName = "session"
-
 func (sm *SessionManager[D]) setSIDCookie(w http.ResponseWriter, sid string) {
 	expires := sm.Clock().Add(sm.opts.TTL + sessionCookieGracePeriod)
-	http.SetCookie(w, sm.opts.CreateCookie(sessionCookieName, sid, expires))
+	http.SetCookie(w, sm.opts.CreateCookie(sm.opts.SessionCookieName, sid, expires))
 }
 
 var errNoSIDCookie = errors.New("no SID cookie")
 
 // getSIDCookie fetches the SID cookie from the provided request and verifies its authenticity.
 func (sm *SessionManager[D]) getSIDCookie(r *http.Request) (string, error) {
-	c, err := r.Cookie(sessionCookieName)
+	c, err := r.Cookie(sm.opts.SessionCookieName)
 	if err != nil {
 		if errors.Is(err, http.ErrNoCookie) {
 			return "", errNoSIDCookie
