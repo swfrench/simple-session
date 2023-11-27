@@ -42,7 +42,7 @@ const (
 // the request Context.
 type contextKey string
 
-const contextKeySession = contextKey("session-id")
+const contextKeySession = contextKey("session")
 
 // Session represents a user session.
 type Session[D any] struct {
