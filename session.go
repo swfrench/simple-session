@@ -137,16 +137,6 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 	}
 }
 
-// GetSession returns the Session object instance from the provided Context -
-// i.e., previously stored there via the Manage middleware.
-func (sm *SessionManager[D]) GetSession(ctx context.Context) *Session[D] {
-	s := ctx.Value(contextKeySession)
-	if s == nil {
-		return nil
-	}
-	return s.(*Session[D])
-}
-
 var errExpiredSession = errors.New("expired session")
 
 func (sm *SessionManager[D]) lookup(ctx context.Context, sid string) (*Session[D], error) {
@@ -297,7 +287,7 @@ func (sm *SessionManager[D]) wrapHandler(w http.ResponseWriter, r *http.Request,
 
 // Manage is a chi-compatible middleware that validates the session cookie,
 // looks up the associated session data, and stores it to the request Context
-// (which can be retrieved via GetSession).
+// (which can be retrieved via Get).
 // If no session cookie is present, a pre-session (i.e., one with nil Data
 // payload) will be created. In other words, Manage ensures a session always
 // exists (with an associated CSRF token).
@@ -305,4 +295,14 @@ func (sm *SessionManager[D]) Manage(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sm.wrapHandler(w, r, next)
 	})
+}
+
+// Get returns the Session object instance stored in the provided request
+// Context by the Manage middleware.
+func Get[D any](ctx context.Context) *Session[D] {
+	s := ctx.Value(contextKeySession)
+	if s == nil {
+		return nil
+	}
+	return s.(*Session[D])
 }

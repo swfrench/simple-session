@@ -117,7 +117,7 @@ func (sr *sessionRunner) close() {
 }
 
 func (sr *sessionRunner) handle(w http.ResponseWriter, r *http.Request) {
-	sr.ctxSession = sr.sm.GetSession(r.Context())
+	sr.ctxSession = session.Get[fakeSessionData](r.Context())
 	if sr.handler != nil {
 		sr.handler(w, r)
 	}
@@ -166,7 +166,7 @@ func TestCreatesPreSession(t *testing.T) {
 
 	// Verify that the (pre)session was provided to the request context.
 	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
+		t.Fatal("Get() returned nil Session within handler")
 	}
 
 	// Verify that the session cookie was provided to the client and is
@@ -199,7 +199,7 @@ func TestCustomSessionCookieName(t *testing.T) {
 
 	// Verify that the (pre)session was provided to the request context.
 	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
+		t.Fatal("Get() returned nil Session within handler")
 	}
 
 	// Verify that the session cookie was provided to the client with the
@@ -447,7 +447,7 @@ func TestClearSession(t *testing.T) {
 
 	// Run the next request, clearing the prior session.
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := sr.sm.GetSession(r.Context())
+		s := session.Get[fakeSessionData](r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
 			t.Errorf("Clear() returned unexpected error: %v", err)
 		}
@@ -476,7 +476,7 @@ func TestClearSessionSucceedsOnDelError(t *testing.T) {
 
 	// Run the next request, attempting to clear the prior session.
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := sr.sm.GetSession(r.Context())
+		s := session.Get[fakeSessionData](r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
 			t.Errorf("Clear() returned unexpected error: %v", err)
 		}
@@ -505,7 +505,7 @@ func TestClearSessionFailsOnSetError(t *testing.T) {
 
 	// Run the next request, attempting to clear the prior session.
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := sr.sm.GetSession(r.Context())
+		s := session.Get[fakeSessionData](r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err == nil {
 			t.Errorf("Clear() should have returned error - got: %v", err)
 		}
@@ -533,7 +533,7 @@ func TestClearSessionSucceedsOnSessionNotFound(t *testing.T) {
 
 	// Run the next request, clearing the prior session.
 	sr.run(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		s := sr.sm.GetSession(r.Context())
+		s := session.Get[fakeSessionData](r.Context())
 		if _, err := sr.sm.Clear(r.Context(), w, s.ID); err != nil {
 			t.Errorf("Clear() returned unexpected error: %v", err)
 		}
@@ -589,7 +589,7 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 
 	// Verify that the (pre)session was provided to the request context.
 	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
+		t.Fatal("Get() returned nil Session within handler")
 	}
 
 	token1 := sr.ctxSession.CSRFToken
@@ -602,7 +602,7 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 
 	// Verify that the new (pre)session was provided to the request context.
 	if sr.ctxSession == nil {
-		t.Fatal("GetSession() returned nil Session within handler")
+		t.Fatal("Get() returned nil Session within handler")
 	}
 
 	// Verify that the new token is indeed new.
@@ -646,11 +646,11 @@ func TestVerifySessionCSRFToken(t *testing.T) {
 	}
 }
 
-func TestGetSessionWithEmptyContext(t *testing.T) {
+func TestGetWithEmptyContext(t *testing.T) {
 	sr := mustCreateSessionRunner(t, sessionOptions())
 	defer sr.close()
 
-	if got, want := sr.sm.GetSession(context.Background()), (*session.Session[fakeSessionData])(nil); got != want {
-		t.Errorf("GetSession() returned unexpected value for empty context - got: %v want: %v", got, want)
+	if got, want := session.Get[fakeSessionData](context.Background()), (*session.Session[fakeSessionData])(nil); got != want {
+		t.Errorf("Get() returned unexpected value for empty context - got: %v want: %v", got, want)
 	}
 }
