@@ -25,6 +25,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/swfrench/simple-session/internal/retry"
 	"github.com/swfrench/simple-session/internal/token"
 	"github.com/swfrench/simple-session/store"
 	"golang.org/x/exp/slog"
@@ -170,35 +171,46 @@ func (sm *SessionManager[D]) createToken() (string, error) {
 // Create creates a new Session with the provided Data payload, storing the
 // session to the SessionStore and setting the associated SID cookie.
 func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, data *D) (*Session[D], error) {
-	// TODO: Consider whether jittered backoff would make sense here, possibly
-	// dependent on the type of SessionStore and error (e.g., Redis errors).
-	attempts := 0
 	var s *Session[D]
-	for s == nil {
-		attempts += 1
+	fn := func(rctx *retry.RetryContext) {
+		// createToken may fail if there is insufficient entropy available, in
+		// which case, it makes sense to backoff and retry.
 		id, err := sm.createToken()
 		if err != nil {
-			return nil, err
+			slog.Error("Failed to generate Session ID token", "error", err)
+			return
 		}
 		csrf, err := sm.createToken()
 		if err != nil {
-			return nil, err
+			slog.Error("Failed to generate CSRF token", "error", err)
+			return
 		}
-		s = &Session[D]{
+		snew := &Session[D]{
 			ID:         id,
 			Data:       data,
 			Expiration: sm.Clock().Add(sm.opts.TTL),
 			CSRFToken:  csrf,
 		}
-		if err := sm.store.Set(ctx, id, s, sm.opts.TTL+sessionStorageGracePeriod); err != nil {
+		// Set may fail if there is a session collision, the backing store is
+		// unavailable, or snew cannot be marshalled for storage.
+		if err := sm.store.Set(ctx, id, snew, sm.opts.TTL+sessionStorageGracePeriod); err != nil {
 			if !errors.Is(err, store.ErrSessionExists) {
-				slog.Error("Failed to store new session", "error", err)
+				slog.Error("Failed to store new Session", "error", err)
 			}
-			if attempts == 3 {
-				return nil, fmt.Errorf("failed to create session in %d attempts, latest error: %v", attempts, err)
+			if errors.Is(err, store.ErrInvalidSessionData) {
+				// This suggests that type D cannot be marshalled by the
+				// underlying store, which retry cannot address.
+				rctx.Abort()
 			}
-			s = nil
+			return
 		}
+		s = snew
+		rctx.Done()
+	}
+	// Max 4 attempts, with inter-attempt delay ~100ms, ~200ms, ~400ms (+/- 20%).
+	err := retry.Backoff{Base: 100 * time.Millisecond, Growth: 2.0, Jitter: 0.2}.Do(fn, 4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create session: %v", err)
 	}
 	sm.setSIDCookie(w, s.ID)
 	if sm.opts.OnCreate != nil {
