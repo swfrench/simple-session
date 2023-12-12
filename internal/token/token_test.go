@@ -9,8 +9,8 @@ import (
 	"github.com/swfrench/simple-session/internal/token"
 )
 
-func TestTokenAuthenticator(t *testing.T) {
-	ta := token.NewTokenAuthenticator(testutil.MustDecodeBase64(t, "FjcKOUT10xuBXjijEMv/UvegOFPtu55WvvS3ChkcyL0="))
+func TestAuthenticator(t *testing.T) {
+	ta := token.NewAuthenticator(testutil.MustDecodeBase64(t, "FjcKOUT10xuBXjijEMv/UvegOFPtu55WvvS3ChkcyL0="))
 	testCases := []struct {
 		name  string
 		token string

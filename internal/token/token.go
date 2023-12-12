@@ -10,22 +10,22 @@ import (
 	"fmt"
 )
 
-// TokenAuthenticator manages HMAC-SHA256 authenticated token strings. Token
-// strings are concatenations of base64url encoded values (separated by '.').
-type TokenAuthenticator struct {
+// Authenticator manages HMAC-SHA256 authenticated token strings. Token strings
+// are concatenations of base64url encoded values (separated by '.').
+type Authenticator struct {
 	key []byte
 }
 
-// NewTokenAuthenticator returns a new TokenAuthenticator instance using the
-// provided HMAC-SHA256 key.
-func NewTokenAuthenticator(key []byte) *TokenAuthenticator {
-	return &TokenAuthenticator{key: key}
+// NewAuthenticator returns a new Authenticator instance using the provided
+// HMAC-SHA256 key.
+func NewAuthenticator(key []byte) *Authenticator {
+	return &Authenticator{key: key}
 }
 
 // Create returns an authenticated token string for the provided payload byte
 // sequence (e.g., an arbitrary identifier).
-func (ta *TokenAuthenticator) Create(data []byte) string {
-	h := hmac.New(sha256.New, ta.key)
+func (a *Authenticator) Create(data []byte) string {
+	h := hmac.New(sha256.New, a.key)
 	h.Write(data)
 	return fmt.Sprintf("%s.%s",
 		base64.URLEncoding.EncodeToString(h.Sum(nil)),
@@ -44,7 +44,7 @@ const base64MACLen = 44
 
 // Verify checks the authenticity of the provided token and extracts the payload
 // byte sequence therein.
-func (ta *TokenAuthenticator) Verify(token string) ([]byte, error) {
+func (a *Authenticator) Verify(token string) ([]byte, error) {
 	if len(token) < base64MACLen+1 {
 		return nil, fmt.Errorf("failed to parse raw token (too short): %w", ErrBadToken)
 	}
@@ -59,7 +59,7 @@ func (ta *TokenAuthenticator) Verify(token string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to decode data segment (error: %v): %w", err, ErrBadToken)
 	}
-	h := hmac.New(sha256.New, ta.key)
+	h := hmac.New(sha256.New, a.key)
 	h.Write(data)
 	if dmac := h.Sum(nil); !hmac.Equal(dmac, mac) {
 		return nil, fmt.Errorf("token MAC verification failed: %w", ErrInvalidToken)

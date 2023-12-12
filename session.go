@@ -109,7 +109,7 @@ type SessionManager[D any] struct {
 	Clock func() time.Time
 	store store.SessionStore[Session[D]]
 	opts  *Options
-	ta    *token.TokenAuthenticator
+	ta    *token.Authenticator
 }
 
 // NewSessionManager returns a new SessionManager using the provided store for
@@ -133,7 +133,7 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 		Clock: func() time.Time { return time.Now() },
 		store: s,
 		opts:  opts,
-		ta:    token.NewTokenAuthenticator(key),
+		ta:    token.NewAuthenticator(key),
 	}
 }
 
