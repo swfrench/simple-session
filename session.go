@@ -1,15 +1,18 @@
 // Package session provides helpers for managing user sessions.
 //
-// At a high level, SessionManager manages the creation of time-bounded Session
+// At a high level, Manager manages the creation of time-bounded Session
 // instances, which are in turn stored to a SessionStore. The Session is imbued
 // with an arbitrary Data payload, which can be used to store user session
-// details (e.g. identity).
+// details (e.g., identity).
 //
-// At Session creation, SessionManager will set the SID cookie to refer to the
-// Session ID.
+// At Session creation, Manager will set a session token cookie to that refers
+// to the Session ID.
 //
 // Sessions also contain an assocated CSRF token, which can be used in CSRF
 // protections (e.g., hidden form fields).
+//
+// Both tokens (session ID and CSRF) are authenticated (currently HMAC-SHA256)
+// using separate keys.
 //
 // The general principle is that HTTP handlers that must be Session-aware will
 // use the Manage middleware. The latter ensures that a Session always exists,
@@ -62,7 +65,7 @@ type Session[D any] struct {
 	CSRFToken string `json:"csrf_token"`
 }
 
-// Options represents tunable knobs that control the behavior of SessionManager.
+// Options represents tunable knobs that control the behavior of Manager.
 type Options struct {
 	// TTL is the duration that any given session is valid. Note that there is
 	// no facility for session extension at this time.
@@ -73,10 +76,10 @@ type Options struct {
 	// with its HMAC (32 bytes) and base64url enconded.
 	// Default if unspecified: 16 bytes
 	IDLen int
-	// SessionCookieName is the name of the session ID cookie set by
-	// SessionManager. For example, together with a suitable definition of
-	// CreateCookie (see below), this can be used to configure a secure cookie
-	// name prefix (e.g., "__Host-").
+	// SessionCookieName is the name of the session ID cookie set by Manager.
+	// For example, together with a suitable definition of CreateCookie (see
+	// below), this can be used to configure a secure cookie name prefix (e.g.,
+	// "__Host-").
 	// Default if unspecified: "session"
 	SessionCookieName string
 	// CreateCookie is a user-supplied factory for creating session ID cookies
@@ -106,8 +109,8 @@ func CreateStrictCookie(name, value string, expires time.Time) *http.Cookie {
 	}
 }
 
-// SessionManager manages user sessions (i.e., Session instances).
-type SessionManager[D any] struct {
+// Manager manages user sessions (i.e., Session instances).
+type Manager[D any] struct {
 	// Clock can be used to override measurement of time in tests.
 	Clock func() time.Time
 	store store.SessionStore[Session[D]]
@@ -129,11 +132,11 @@ func deriveKeys(ikm []byte, infos []string) ([][]byte, error) {
 	return keys, nil
 }
 
-// NewSessionManager returns a new SessionManager using the provided store for
-// session storage and respecting the provided options.
+// NewManager returns a new Manager using the provided store for session storage
+// and respecting the provided options.
 // Session IDs and associated CSRF tokens are authenticated (HMAC-SHA256) using
 // keys derived from the provided initial key.
-func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts *Options) (*SessionManager[D], error) {
+func NewManager[D any](s store.SessionStore[Session[D]], key []byte, opts *Options) (*Manager[D], error) {
 	if opts.TTL == time.Duration(0) {
 		opts.TTL = defaultSessionTTL
 	}
@@ -150,7 +153,7 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 	if err != nil {
 		return nil, err
 	}
-	return &SessionManager[D]{
+	return &Manager[D]{
 		Clock: func() time.Time { return time.Now() },
 		store: s,
 		opts:  opts,
@@ -161,54 +164,54 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 
 var errExpiredSession = errors.New("expired session")
 
-func (sm *SessionManager[D]) lookup(ctx context.Context, sid string) (*Session[D], error) {
-	s, err := sm.store.Get(ctx, sid)
+func (m *Manager[D]) lookup(ctx context.Context, sid string) (*Session[D], error) {
+	s, err := m.store.Get(ctx, sid)
 	if err != nil {
 		return nil, err
 	}
-	if s.Expiration.Before(sm.Clock()) {
+	if s.Expiration.Before(m.Clock()) {
 		return nil, errExpiredSession
 	}
 	return s, nil
 }
 
-func (sm *SessionManager[D]) createID() ([]byte, error) {
-	data := make([]byte, sm.opts.IDLen)
+func (m *Manager[D]) createID() ([]byte, error) {
+	data := make([]byte, m.opts.IDLen)
 	if _, err := rand.Read(data); err != nil {
 		return nil, err
 	}
 	return data, nil
 }
 
-func (sm *SessionManager[D]) createSessionToken() (string, error) {
-	data, err := sm.createID()
+func (m *Manager[D]) createSessionToken() (string, error) {
+	data, err := m.createID()
 	if err != nil {
 		return "", err
 	}
-	return sm.sta.Create(data), nil
+	return m.sta.Create(data), nil
 }
 
-func (sm *SessionManager[D]) createCSRFToken() (string, error) {
-	data, err := sm.createID()
+func (m *Manager[D]) createCSRFToken() (string, error) {
+	data, err := m.createID()
 	if err != nil {
 		return "", err
 	}
-	return sm.cta.Create(data), nil
+	return m.cta.Create(data), nil
 }
 
 // Create creates a new Session with the provided Data payload, storing the
 // session to the SessionStore and setting the associated SID cookie.
-func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, data *D) (*Session[D], error) {
+func (m *Manager[D]) Create(ctx context.Context, w http.ResponseWriter, data *D) (*Session[D], error) {
 	var s *Session[D]
 	fn := func(rctx *retry.RetryContext) {
 		// create(Session|CSRF)Token may fail if there is insufficient entropy
 		// available, in which case, it makes sense to backoff and retry.
-		id, err := sm.createSessionToken()
+		id, err := m.createSessionToken()
 		if err != nil {
 			slog.Error("Failed to generate Session ID token", "error", err)
 			return
 		}
-		csrf, err := sm.createCSRFToken()
+		csrf, err := m.createCSRFToken()
 		if err != nil {
 			slog.Error("Failed to generate CSRF token", "error", err)
 			return
@@ -216,12 +219,12 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 		snew := &Session[D]{
 			ID:         id,
 			Data:       data,
-			Expiration: sm.Clock().Add(sm.opts.TTL),
+			Expiration: m.Clock().Add(m.opts.TTL),
 			CSRFToken:  csrf,
 		}
 		// Set may fail if there is a session collision, the backing store is
 		// unavailable, or snew cannot be marshalled for storage.
-		if err := sm.store.Set(ctx, id, snew, sm.opts.TTL+sessionStorageGracePeriod); err != nil {
+		if err := m.store.Set(ctx, id, snew, m.opts.TTL+sessionStorageGracePeriod); err != nil {
 			if !errors.Is(err, store.ErrSessionExists) {
 				slog.Error("Failed to store new Session", "error", err)
 			}
@@ -240,9 +243,9 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session: %v", err)
 	}
-	sm.setSIDCookie(w, s.ID)
-	if sm.opts.OnCreate != nil {
-		sm.opts.OnCreate(w, s)
+	m.setSIDCookie(w, s.ID)
+	if m.opts.OnCreate != nil {
+		m.opts.OnCreate(w, s)
 	}
 	return s, nil
 }
@@ -252,34 +255,34 @@ func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, 
 // stored to the SessionStore and its ID set in the SID cookie, and it is also
 // returned. Deletion of the old session is considered non-critical (i.e.,
 // unexpected errors are merely logged).
-func (sm *SessionManager[D]) Clear(ctx context.Context, w http.ResponseWriter, sid string) (*Session[D], error) {
-	ps, err := sm.Create(ctx, w, nil)
+func (m *Manager[D]) Clear(ctx context.Context, w http.ResponseWriter, sid string) (*Session[D], error) {
+	ps, err := m.Create(ctx, w, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new pre-session: %w", err)
 	}
-	if err := sm.store.Del(ctx, sid); err != nil && !errors.Is(err, store.ErrSessionNotFound) {
+	if err := m.store.Del(ctx, sid); err != nil && !errors.Is(err, store.ErrSessionNotFound) {
 		slog.Error("Failed to delete data for session", "sid", sid)
 	}
 	return ps, nil
 }
 
-func (sm *SessionManager[D]) setSIDCookie(w http.ResponseWriter, sid string) {
-	expires := sm.Clock().Add(sm.opts.TTL + sessionCookieGracePeriod)
-	http.SetCookie(w, sm.opts.CreateCookie(sm.opts.SessionCookieName, sid, expires))
+func (m *Manager[D]) setSIDCookie(w http.ResponseWriter, sid string) {
+	expires := m.Clock().Add(m.opts.TTL + sessionCookieGracePeriod)
+	http.SetCookie(w, m.opts.CreateCookie(m.opts.SessionCookieName, sid, expires))
 }
 
 var errNoSIDCookie = errors.New("no SID cookie")
 
 // getSIDCookie fetches the SID cookie from the provided request and verifies its authenticity.
-func (sm *SessionManager[D]) getSIDCookie(r *http.Request) (string, error) {
-	c, err := r.Cookie(sm.opts.SessionCookieName)
+func (m *Manager[D]) getSIDCookie(r *http.Request) (string, error) {
+	c, err := r.Cookie(m.opts.SessionCookieName)
 	if err != nil {
 		if errors.Is(err, http.ErrNoCookie) {
 			return "", errNoSIDCookie
 		}
 		return "", err
 	}
-	if _, err := sm.sta.Verify(c.Value); err != nil {
+	if _, err := m.sta.Verify(c.Value); err != nil {
 		return "", err
 	}
 	return c.Value, nil
@@ -287,8 +290,8 @@ func (sm *SessionManager[D]) getSIDCookie(r *http.Request) (string, error) {
 
 // VerifySessionCSRFToken verifies the authenticity of the provided CSRF token
 // and that it matches the expected value for the provided Session.
-func (sm *SessionManager[D]) VerifySessionCSRFToken(token string, s *Session[D]) error {
-	if _, err := sm.cta.Verify(token); err != nil {
+func (m *Manager[D]) VerifySessionCSRFToken(token string, s *Session[D]) error {
+	if _, err := m.cta.Verify(token); err != nil {
 		return fmt.Errorf("failed to validate CSRF token: %w", err)
 	}
 	if token != s.CSRFToken {
@@ -297,21 +300,21 @@ func (sm *SessionManager[D]) VerifySessionCSRFToken(token string, s *Session[D])
 	return nil
 }
 
-func (sm *SessionManager[D]) wrapHandler(w http.ResponseWriter, r *http.Request, next http.Handler) {
+func (m *Manager[D]) wrapHandler(w http.ResponseWriter, r *http.Request, next http.Handler) {
 	var s *Session[D]
-	sid, err := sm.getSIDCookie(r)
+	sid, err := m.getSIDCookie(r)
 	if err != nil {
 		// Regardless of the error reason, we'll create a pre-session below.
 		if !errors.Is(err, errNoSIDCookie) {
 			slog.Error("Failed to extract session cookie", "error", err)
 		}
-	} else if cs, err := sm.lookup(r.Context(), sid); err != nil {
+	} else if cs, err := m.lookup(r.Context(), sid); err != nil {
 		slog.Debug("Failed to look up session for SID", "sid", sid, "error", err)
 	} else {
 		s = cs
 	}
 	if s == nil {
-		ps, err := sm.Create(r.Context(), w, nil)
+		ps, err := m.Create(r.Context(), w, nil)
 		if err != nil {
 			slog.Error("Failed to create session", "error", err)
 			http.Error(w, "internal error", http.StatusInternalServerError)
@@ -329,9 +332,9 @@ func (sm *SessionManager[D]) wrapHandler(w http.ResponseWriter, r *http.Request,
 // If no session cookie is present, a pre-session (i.e., one with nil Data
 // payload) will be created. In other words, Manage ensures a session always
 // exists (with an associated CSRF token).
-func (sm *SessionManager[D]) Manage(next http.Handler) http.Handler {
+func (m *Manager[D]) Manage(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		sm.wrapHandler(w, r, next)
+		m.wrapHandler(w, r, next)
 	})
 }
 

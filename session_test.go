@@ -84,7 +84,7 @@ func sessionOptions() *session.Options {
 
 type sessionRunner struct {
 	store      *stubStore[session.Session[fakeSessionData]]
-	sm         *session.SessionManager[fakeSessionData]
+	sm         *session.Manager[fakeSessionData]
 	ctxSession *session.Session[fakeSessionData]
 	srv        *httptest.Server
 	srvURL     *url.URL
@@ -98,9 +98,9 @@ func mustCreateSessionRunner(t *testing.T, opts *session.Options) *sessionRunner
 	sr.store = newStubStore[session.Session[fakeSessionData]]()
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
 	var err error
-	sr.sm, err = session.NewSessionManager[fakeSessionData](sr.store, k, opts)
+	sr.sm, err = session.NewManager[fakeSessionData](sr.store, k, opts)
 	if err != nil {
-		t.Fatalf("NewSessionManager() returned unexpected error: %v", err)
+		t.Fatalf("NewManager() returned unexpected error: %v", err)
 	}
 	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	sr.srvURL, err = url.Parse(sr.srv.URL)
