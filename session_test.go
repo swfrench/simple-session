@@ -97,9 +97,12 @@ func mustCreateSessionRunner(t *testing.T, opts *session.Options) *sessionRunner
 	sr := new(sessionRunner)
 	sr.store = newStubStore[session.Session[fakeSessionData]]()
 	k := testutil.MustDecodeBase64(t, "W+HdoO687DHK7p/Uk933ojArElzkEMtRebhW07NFTgU=")
-	sr.sm = session.NewSessionManager[fakeSessionData](sr.store, k, opts)
-	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	var err error
+	sr.sm, err = session.NewSessionManager[fakeSessionData](sr.store, k, opts)
+	if err != nil {
+		t.Fatalf("NewSessionManager() returned unexpected error: %v", err)
+	}
+	sr.srv = httptest.NewServer(sr.sm.Manage(http.HandlerFunc(sr.handle)))
 	sr.srvURL, err = url.Parse(sr.srv.URL)
 	if err != nil {
 		t.Fatalf("url.Parse() returned unexpected error: %v", err)

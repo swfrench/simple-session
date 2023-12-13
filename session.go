@@ -20,14 +20,17 @@ package session
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
 	"github.com/swfrench/simple-session/internal/retry"
 	"github.com/swfrench/simple-session/internal/token"
 	"github.com/swfrench/simple-session/store"
+	"golang.org/x/crypto/hkdf"
 	"golang.org/x/exp/slog"
 )
 
@@ -109,14 +112,28 @@ type SessionManager[D any] struct {
 	Clock func() time.Time
 	store store.SessionStore[Session[D]]
 	opts  *Options
-	ta    *token.Authenticator
+	sta   *token.Authenticator
+	cta   *token.Authenticator
+}
+
+func deriveKeys(ikm []byte, infos []string) ([][]byte, error) {
+	var keys [][]byte
+	prk := hkdf.Extract(sha256.New, ikm, nil)
+	for _, info := range infos {
+		key := make([]byte, 32)
+		if _, err := io.ReadFull(hkdf.Expand(sha256.New, prk, []byte(info)), key); err != nil {
+			return nil, err
+		}
+		keys = append(keys, key)
+	}
+	return keys, nil
 }
 
 // NewSessionManager returns a new SessionManager using the provided store for
 // session storage and respecting the provided options.
-// Session IDs and associated CSRF tokens are authenticated with HMAC-SHA256
-// using the provided key.
-func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts *Options) *SessionManager[D] {
+// Session IDs and associated CSRF tokens are authenticated (HMAC-SHA256) using
+// keys derived from the provided initial key.
+func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts *Options) (*SessionManager[D], error) {
 	if opts.TTL == time.Duration(0) {
 		opts.TTL = defaultSessionTTL
 	}
@@ -129,12 +146,17 @@ func NewSessionManager[D any](s store.SessionStore[Session[D]], key []byte, opts
 	if opts.CreateCookie == nil {
 		opts.CreateCookie = CreateStrictCookie
 	}
+	keys, err := deriveKeys(key, []string{"session-token", "csrf-token"})
+	if err != nil {
+		return nil, err
+	}
 	return &SessionManager[D]{
 		Clock: func() time.Time { return time.Now() },
 		store: s,
 		opts:  opts,
-		ta:    token.NewAuthenticator(key),
-	}
+		sta:   token.NewAuthenticator(keys[0]),
+		cta:   token.NewAuthenticator(keys[1]),
+	}, nil
 }
 
 var errExpiredSession = errors.New("expired session")
@@ -150,12 +172,28 @@ func (sm *SessionManager[D]) lookup(ctx context.Context, sid string) (*Session[D
 	return s, nil
 }
 
-func (sm *SessionManager[D]) createToken() (string, error) {
+func (sm *SessionManager[D]) createID() ([]byte, error) {
 	data := make([]byte, sm.opts.IDLen)
 	if _, err := rand.Read(data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func (sm *SessionManager[D]) createSessionToken() (string, error) {
+	data, err := sm.createID()
+	if err != nil {
 		return "", err
 	}
-	return sm.ta.Create(data), nil
+	return sm.sta.Create(data), nil
+}
+
+func (sm *SessionManager[D]) createCSRFToken() (string, error) {
+	data, err := sm.createID()
+	if err != nil {
+		return "", err
+	}
+	return sm.cta.Create(data), nil
 }
 
 // Create creates a new Session with the provided Data payload, storing the
@@ -163,14 +201,14 @@ func (sm *SessionManager[D]) createToken() (string, error) {
 func (sm *SessionManager[D]) Create(ctx context.Context, w http.ResponseWriter, data *D) (*Session[D], error) {
 	var s *Session[D]
 	fn := func(rctx *retry.RetryContext) {
-		// createToken may fail if there is insufficient entropy available, in
-		// which case, it makes sense to backoff and retry.
-		id, err := sm.createToken()
+		// create(Session|CSRF)Token may fail if there is insufficient entropy
+		// available, in which case, it makes sense to backoff and retry.
+		id, err := sm.createSessionToken()
 		if err != nil {
 			slog.Error("Failed to generate Session ID token", "error", err)
 			return
 		}
-		csrf, err := sm.createToken()
+		csrf, err := sm.createCSRFToken()
 		if err != nil {
 			slog.Error("Failed to generate CSRF token", "error", err)
 			return
@@ -241,7 +279,7 @@ func (sm *SessionManager[D]) getSIDCookie(r *http.Request) (string, error) {
 		}
 		return "", err
 	}
-	if _, err := sm.ta.Verify(c.Value); err != nil {
+	if _, err := sm.sta.Verify(c.Value); err != nil {
 		return "", err
 	}
 	return c.Value, nil
@@ -250,7 +288,7 @@ func (sm *SessionManager[D]) getSIDCookie(r *http.Request) (string, error) {
 // VerifySessionCSRFToken verifies the authenticity of the provided CSRF token
 // and that it matches the expected value for the provided Session.
 func (sm *SessionManager[D]) VerifySessionCSRFToken(token string, s *Session[D]) error {
-	if _, err := sm.ta.Verify(token); err != nil {
+	if _, err := sm.cta.Verify(token); err != nil {
 		return fmt.Errorf("failed to validate CSRF token: %w", err)
 	}
 	if token != s.CSRFToken {
