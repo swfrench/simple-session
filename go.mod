@@ -6,7 +6,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.31.0
 	github.com/google/go-cmp v0.6.0
 	github.com/redis/go-redis/v9 v9.3.0
-	golang.org/x/crypto v0.16.0
+	golang.org/x/crypto v0.17.0
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
 )
 
