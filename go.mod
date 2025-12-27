@@ -1,6 +1,6 @@
 module github.com/swfrench/simple-session
 
-go 1.23.0
+go 1.24.0
 
 toolchain go1.24.2
 
@@ -8,7 +8,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.31.0
 	github.com/google/go-cmp v0.6.0
 	github.com/redis/go-redis/v9 v9.3.0
-	golang.org/x/crypto v0.37.0
+	golang.org/x/crypto v0.46.0
 	golang.org/x/exp v0.0.0-20231006140011-7918f672742d
 )
 
